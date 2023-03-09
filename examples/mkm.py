@@ -28,15 +28,49 @@ from chiptunesak.chirp import Note, ChirpTrack, ChirpSong
 
 
 class Mkm(ChiptuneSAKIO):
+    CIA_FREQ_PAL  =  985248
+    CIA_FREQ_NTSC = 1022727
+    PPQ = 960
 
     def to_file(self, song, filename, **kwargs):
         print("to_file:", filename)
         mkm_song = MkmSong()
+
+        qticks_duration = song.qticks_durations
+        tempo = song.tempo_changes[0].qpm
+        tempo_min = min(t.qpm for t in song.tempo_changes)
+        tempo_max = max(t.qpm for t in song.tempo_changes)
+
+        print("min:", tempo_min, "max:", tempo_max)
+        print("tempo:", tempo)
+        print("qticks duration:", qticks_duration)
+
+        print("Loop!")
+        while True:
+            qticks_duration = song.qticks_durations
+            print("qticks duration:", qticks_duration)
+            cia_count = (Mkm.CIA_FREQ_NTSC * 60 * qticks_duration) // (tempo_min * Mkm.PPQ)
+            print("CIA count:", hex(cia_count))
+            if cia_count <= 0xffff:
+                break
+            else:
+                qticks_duration = qticks_duration // 2
+                song.quantize(qticks_duration, qticks_duration)
+
+        for tempo_change in song.tempo_changes:
+            print("Tempo Change:", tempo_change)
+            tempo_qpm = tempo_change.qpm
+            cia_ntsc = (Mkm.CIA_FREQ_NTSC * 60 * qticks_duration) // (tempo_qpm * Mkm.PPQ)
+            cia_pal  = (Mkm.CIA_FREQ_PAL * 60 * qticks_duration) // (tempo_qpm * Mkm.PPQ)
+            mkm_song.event_list.append(MkmTempoChange(tempo_change.start_time, cia_ntsc, cia_pal))
+
         t = 1
         for track in song.tracks:
             print("Track", t)
             print("qticks_notes:", track.qticks_notes)
             print("qticks_durations:", track.qticks_durations)
+            print("4 mod track.quticks_durations:", 4 % track.qticks_durations == 0)
+
             for note in track.notes:
                 #print("Note:", note.note_num, MkmNote.to_mkm_pitch(note.note_num))
                 mkm_note = MkmNote(note.note_num, note.start_time//track.qticks_notes, note.duration//track.qticks_durations, t)
@@ -44,6 +78,12 @@ class Mkm(ChiptuneSAKIO):
                 print("Note1:", mkm_note)
                 mkm_song.add_note(mkm_note)
             t += 1
+        print("is quantized:", song.is_quantized())
+        for ts in song.time_signature_changes:
+            print("Time Signature Change:", ts)
+        for tempo_change in song.tempo_changes:
+            print("Tempo Change:", tempo_change)
+        print("qticks duration:", song.qticks_durations)
 
         ##print("Song unsorted:",mkm_song)
         ##mkm_song.sort()
@@ -140,10 +180,22 @@ class MkmSongEnd(MkmEvent):
     def to_data(self):
         return [0,0]
 
+class MkmTempoChange(MkmEvent):
+    def __init__(self, time, cia_ntsc, cia_pal):
+        super().__init__(time)
+        self.cia_ntsc = cia_ntsc
+        self.cia_pal = cia_pal
+
+    def __str__(self):
+        return str(str(self.time) + ' Tempo Change " + str(hex(self.cia_ntsc)) + \n')
+
+    def to_data(self):
+        return [0, 0x30, self.cia_ntsc & 0xff, self.cia_ntsc >> 8, self.cia_pal & 0xff, self.cia_pal >> 8]
 
 class MkmSong:
     def __init__(self, name="mkm song"):
         self.notes = list()
+        self.event_list = list()
 
     def add_note(self, note):
         self.notes.append(note)
@@ -155,7 +207,7 @@ class MkmSong:
          # creates an event list from the existing notes list
          # for all notes, add note-on and note-off events
          # iterate over event list, add time delay events, output events2
-         events = list()
+         events = self.event_list
          time = 0
          for note in self.notes:
              events.append(MkmNoteOn(note))
@@ -218,6 +270,7 @@ if __name__ == "__main__":
     print("Input file name:", args.input)
 
     # Read in the MIDI song and quantize
-    chirp_song = chiptunesak.MIDI().to_chirp(input_midi_file, quantization='32', polyphony=False)
+    #chirp_song = chiptunesak.MIDI().to_chirp(input_midi_file, quantization='32', polyphony=False)
+    chirp_song = chiptunesak.MIDI().to_chirp(input_midi_file, quantization='auto', polyphony=False)
     mkm = Mkm()
     mkm.to_file(chirp_song, "squirrel_out.mkm")
